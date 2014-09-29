@@ -94,7 +94,7 @@ import reikna.cluda.functions as functions
 import reikna.cluda as cluda
 from reikna.cluda import Module
 
-from beclab.integrator import *
+from reiknacontrib.integrator import *
 
 
 def get_drift(state_dtype, U, gamma, dx, wigner=False):
