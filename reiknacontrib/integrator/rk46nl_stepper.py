@@ -6,7 +6,7 @@ from reikna.core import Computation, Parameter, Annotation, Type
 from reikna.fft import FFT
 from reikna.algorithms import PureParallel
 
-from beclab.integrator.helpers import get_ksquared, get_kprop_trf, get_project_trf
+from .helpers import get_ksquared, get_kprop_trf, get_project_trf
 
 
 def get_xpropagate(state_arr, drift, diffusion=None, dW_arr=None):

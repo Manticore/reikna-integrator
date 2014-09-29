@@ -6,8 +6,8 @@ import time
 
 from progressbar import Bar, ETA, Timer, Percentage, ProgressBar
 
-from beclab.integrator.progress import StatefulLabel, HFill
-from beclab.integrator.results import sample, transpose_results, calculate_errors, \
+from .progress import StatefulLabel, HFill
+from .results import sample, transpose_results, calculate_errors, \
     Sampler, StopIntegration, IntegrationError, Timings, IntegrationInfo
 
 
