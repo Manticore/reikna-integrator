@@ -4,11 +4,6 @@ reikna-integrator
 
 A collection of SDE integration tools based on `Reikna <http://reikna.publicfields.net>`_.
 
-Contents:
-
-.. toctree::
-   :maxdepth: 2
-
 
 ******************
 Indices and tables
