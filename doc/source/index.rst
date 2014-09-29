@@ -53,6 +53,11 @@ Available steppers:
     Central difference semi-implicit stepper in the interaction picture.
     Does not support momentum cutoffs at the moment.
 
+.. py:class:: CDParallelStepper
+
+    Central difference semi-implicit stepper for cases with no transverse derivatives.
+    Supports real-valued state vectors.
+
 .. py:class:: RK4IPStepper
 
     Standard Runge-Kutta 4th order in the interaction picture (`Caradoc-Davies, 2000 (PhD thesis) <http://www.physics.otago.ac.nz/research/jackdodd/resources/ResourceFiles/Caradoc-Davies_PhD_thesis.pdf>`_).
