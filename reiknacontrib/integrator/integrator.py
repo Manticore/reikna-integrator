@@ -241,8 +241,13 @@ class Integrator:
             samples=samples, samplers=samplers, verbose=self.verbose, filters=filters)
         results = [sample_start] + results
 
-        strong_errors, weak_errors = calculate_errors(
-            results[-1], results_double[-1], strong_keys, weak_keys)
+        if len(convergence_samplers) > 0:
+            strong_errors, weak_errors = calculate_errors(
+                results[-1], results_double[-1], strong_keys, weak_keys)
+        else:
+            strong_errors = {}
+            weak_errors = {}
+
         if self.verbose:
             if len(strong_errors) > 0:
                 print("Strong errors:", repr(strong_errors))
