@@ -7,6 +7,7 @@ from reikna.fft import FFT
 from reikna.algorithms import PureParallel
 
 from .helpers import get_ksquared, get_kprop_exp_trf
+from .base import Stepper
 
 
 def get_nonlinear_wrapper(state_dtype, grid_dims, drift, diffusion=None):
@@ -66,16 +67,16 @@ def get_nonlinear_wrapper(state_dtype, grid_dims, drift, diffusion=None):
             diffusion=diffusion))
 
 
-def get_nonlinear1(state_arr, nonlinear_wrapper, components, diffusion=None, dW_arr=None):
+def get_nonlinear1(state_type, nonlinear_wrapper, components, diffusion=None, noise_type=None):
 
-    real_dtype = dtypes.real_for(state_arr.dtype)
+    real_dtype = dtypes.real_for(state_type.dtype)
 
     # output = N(input)
     return PureParallel(
         [
-            Parameter('output', Annotation(state_arr, 'o')),
-            Parameter('input', Annotation(state_arr, 'i'))]
-            + ([Parameter('dW', Annotation(dW_arr, 'i'))] if diffusion is not None else []) +
+            Parameter('output', Annotation(state_type, 'o')),
+            Parameter('input', Annotation(state_type, 'i'))]
+            + ([Parameter('dW', Annotation(noise_type, 'i'))] if diffusion is not None else []) +
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype))],
         """
@@ -105,16 +106,16 @@ def get_nonlinear1(state_arr, nonlinear_wrapper, components, diffusion=None, dW_
             ${trajectory}, ${comp}, ${coords}, ${nonlinear}${comp}(${n_args}, ${t}, ${dt}));
         %endfor
         """,
-        guiding_array=(state_arr.shape[0],) + state_arr.shape[2:],
+        guiding_array=(state_type.shape[0],) + state_type.shape[2:],
         render_kwds=dict(
             components=components,
             nonlinear=nonlinear_wrapper,
             diffusion=diffusion))
 
 
-def get_nonlinear2(state_arr, nonlinear_wrapper, components, diffusion=None, dW_arr=None):
+def get_nonlinear2(state_type, nonlinear_wrapper, components, diffusion=None, noise_type=None):
 
-    real_dtype = dtypes.real_for(state_arr.dtype)
+    real_dtype = dtypes.real_for(state_type.dtype)
 
     # k2 = N(psi_I + k1 / 2, t + dt / 2)
     # k3 = N(psi_I + k2 / 2, t + dt / 2)
@@ -122,11 +123,11 @@ def get_nonlinear2(state_arr, nonlinear_wrapper, components, diffusion=None, dW_
     # psi_k = psi_I + (k1 + 2(k2 + k3)) / 6 (argument for the final k-propagation)
     return PureParallel(
         [
-            Parameter('psi_k', Annotation(state_arr, 'o')),
-            Parameter('psi_4', Annotation(state_arr, 'o')),
-            Parameter('psi_I', Annotation(state_arr, 'i')),
-            Parameter('k1', Annotation(state_arr, 'i'))]
-            + ([Parameter('dW', Annotation(dW_arr, 'i'))] if diffusion is not None else []) +
+            Parameter('psi_k', Annotation(state_type, 'o')),
+            Parameter('psi_4', Annotation(state_type, 'o')),
+            Parameter('psi_I', Annotation(state_type, 'i')),
+            Parameter('k1', Annotation(state_type, 'i'))]
+            + ([Parameter('dW', Annotation(noise_type, 'i'))] if diffusion is not None else []) +
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype))],
         """
@@ -182,26 +183,26 @@ def get_nonlinear2(state_arr, nonlinear_wrapper, components, diffusion=None, dW_
             psi_I_${comp} + ${div}(k1_${comp}, 6) + ${div}(k2_${comp}, 3) + ${div}(k3_${comp}, 3));
         %endfor
         """,
-        guiding_array=(state_arr.shape[0],) + state_arr.shape[2:],
+        guiding_array=(state_type.shape[0],) + state_type.shape[2:],
         render_kwds=dict(
             components=components,
             nonlinear=nonlinear_wrapper,
             diffusion=diffusion,
-            div=functions.div(state_arr.dtype, numpy.int32, out_dtype=state_arr.dtype)))
+            div=functions.div(state_type.dtype, numpy.int32, out_dtype=state_type.dtype)))
 
 
-def get_nonlinear3(state_arr, nonlinear_wrapper, components, diffusion=None, dW_arr=None):
+def get_nonlinear3(state_type, nonlinear_wrapper, components, diffusion=None, noise_type=None):
 
-    real_dtype = dtypes.real_for(state_arr.dtype)
+    real_dtype = dtypes.real_for(state_type.dtype)
 
     # k4 = N(D(psi_4), t + dt)
     # output = D(psi_k) + k4 / 6
     return PureParallel(
         [
-            Parameter('output', Annotation(state_arr, 'o')),
-            Parameter('kprop_psi_k', Annotation(state_arr, 'i')),
-            Parameter('kprop_psi_4', Annotation(state_arr, 'i'))]
-            + ([Parameter('dW', Annotation(dW_arr, 'i'))] if diffusion is not None else []) +
+            Parameter('output', Annotation(state_type, 'o')),
+            Parameter('kprop_psi_k', Annotation(state_type, 'i')),
+            Parameter('kprop_psi_4', Annotation(state_type, 'i'))]
+            + ([Parameter('dW', Annotation(noise_type, 'i'))] if diffusion is not None else []) +
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype))],
         """
@@ -238,15 +239,15 @@ def get_nonlinear3(state_arr, nonlinear_wrapper, components, diffusion=None, dW_
             psik_${comp} + ${div}(k4_${comp}, 6));
         %endfor
         """,
-        guiding_array=(state_arr.shape[0],) + state_arr.shape[2:],
+        guiding_array=(state_type.shape[0],) + state_type.shape[2:],
         render_kwds=dict(
             components=components,
             nonlinear=nonlinear_wrapper,
             diffusion=diffusion,
-            div=functions.div(state_arr.dtype, numpy.int32, out_dtype=state_arr.dtype)))
+            div=functions.div(state_type.dtype, numpy.int32, out_dtype=state_type.dtype)))
 
 
-class RK4IPStepper(Computation):
+class _RK4IPStepperComp(Computation):
     """
     The integration method is RK4IP taken from the thesis by B. Caradoc-Davies
     "Vortex Dynamics in Bose-Einstein Condensates" (2000),
@@ -256,51 +257,42 @@ class RK4IPStepper(Computation):
     abbreviation = "RK4IP"
 
     def __init__(self, shape, box, drift, trajectories=1, kinetic_coeff=0.5j, diffusion=None,
-            ksquared_cutoff=None):
-
-        if ksquared_cutoff is not None:
-            raise NotImplementedError
+            noise_type=None):
 
         real_dtype = dtypes.real_for(drift.dtype)
+        state_type = Type(drift.dtype, (trajectories, drift.components) + shape)
 
-        if diffusion is not None:
-            assert diffusion.dtype == drift.dtype
-            assert diffusion.components == drift.components
-            self._noise = True
-            dW_dtype = real_dtype if diffusion.real_noise else drift.dtype
-            dW_arr = Type(dW_dtype, (trajectories, diffusion.noise_sources) + shape)
-        else:
-            dW_arr = None
-            self._noise = False
-
-        state_arr = Type(drift.dtype, (trajectories, drift.components) + shape)
+        self._noise = diffusion is not None
 
         Computation.__init__(self,
-            [Parameter('output', Annotation(state_arr, 'o')),
-            Parameter('input', Annotation(state_arr, 'i'))]
-            + ([Parameter('dW', Annotation(dW_arr, 'i'))] if self._noise else []) +
+            [Parameter('output', Annotation(state_type, 'o')),
+            Parameter('input', Annotation(state_type, 'i'))]
+            + ([Parameter('dW', Annotation(noise_type, 'i'))] if self._noise else []) +
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype))])
 
         ksquared = get_ksquared(shape, box)
         # '/2' because we want to propagate only to dt/2
         self._kprop = (-ksquared / 2).astype(real_dtype)
-        kprop_trf = get_kprop_exp_trf(state_arr, self._kprop, kinetic_coeff)
+        kprop_trf = get_kprop_exp_trf(state_type, self._kprop, kinetic_coeff)
 
-        self._fft = FFT(state_arr, axes=range(2, len(state_arr.shape)))
-        self._fft_with_kprop = FFT(state_arr, axes=range(2, len(state_arr.shape)))
+        self._fft = FFT(state_type, axes=range(2, len(state_type.shape)))
+        self._fft_with_kprop = FFT(state_type, axes=range(2, len(state_type.shape)))
         self._fft_with_kprop.parameter.output.connect(
             kprop_trf, kprop_trf.input,
             output_prime=kprop_trf.output, kprop=kprop_trf.kprop, dt=kprop_trf.dt)
 
         nonlinear_wrapper = get_nonlinear_wrapper(
-            state_arr.dtype, len(state_arr.shape) - 2, drift, diffusion=diffusion)
+            state_type.dtype, len(state_type.shape) - 2, drift, diffusion=diffusion)
         self._N1 = get_nonlinear1(
-            state_arr, nonlinear_wrapper, drift.components, diffusion=diffusion, dW_arr=dW_arr)
+            state_type, nonlinear_wrapper, drift.components,
+            diffusion=diffusion, noise_type=noise_type)
         self._N2 = get_nonlinear2(
-            state_arr, nonlinear_wrapper, drift.components, diffusion=diffusion, dW_arr=dW_arr)
+            state_type, nonlinear_wrapper, drift.components,
+            diffusion=diffusion, noise_type=noise_type)
         self._N3 = get_nonlinear3(
-            state_arr, nonlinear_wrapper, drift.components, diffusion=diffusion, dW_arr=dW_arr)
+            state_type, nonlinear_wrapper, drift.components,
+            diffusion=diffusion, noise_type=noise_type)
 
     def _add_kprop(self, plan, output, input_, kprop_device, dt):
         temp = plan.temp_array_like(output)
@@ -347,3 +339,39 @@ class RK4IPStepper(Computation):
         plan.computation_call(self._N3, output, kprop_psi_k, kprop_psi_4, *t_args)
 
         return plan
+
+
+class RK4IPStepper(Stepper):
+    """
+    The integration method is RK4IP taken from the thesis by B. Caradoc-Davies
+    "Vortex Dynamics in Bose-Einstein Condensates" (2000),
+    namely Eqns. B.10 (p. 166).
+
+    :param shape: grid shape.
+    :param box: the physical size of the grid.
+    :param drift: a :py:class:`Drift` object providing the function :math:`D`.
+    :param trajectories: the number of stochastic trajectories.
+    :param kinetic_coeff: the value of :math:`K` above (can be real or complex).
+    :param diffusion: a :py:class:`Diffusion` object providing the function :math:`S`.
+    :param ksquared_cutoff: if a positive real value, will be used as a cutoff threshold
+        for :math:`k^2` in the momentum space.
+        The modes with higher momentum will be projected out on each step.
+    """
+
+    abbreviation = "RK4IP"
+
+    def __init__(self, shape, box, drift,
+            trajectories=1, kinetic_coeff=0.5j, diffusion=None, ksquared_cutoff=None):
+
+        if ksquared_cutoff is not None:
+            raise NotImplementedError
+
+        Stepper.__init__(self, shape, box, drift, trajectories=trajectories, diffusion=diffusion)
+
+        self._stepper_comp = _RK4IPStepperComp(
+            shape, box, drift,
+            trajectories=trajectories,
+            kinetic_coeff=kinetic_coeff, diffusion=diffusion, noise_type=self.noise_type)
+
+    def get_stepper(self, thread):
+        return self._stepper_comp.compile(thread)

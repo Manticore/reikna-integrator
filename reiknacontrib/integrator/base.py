@@ -1,6 +1,11 @@
 """
 Some base classes, mainly for centralized documenting purposes.
 """
+from reikna.cluda import dtypes
+from reikna.core import Computation, Parameter, Annotation, Type
+from reikna.helpers import product
+
+from .wiener import Wiener
 
 
 class Filter:
@@ -21,8 +26,6 @@ class Filter:
 
 class Stepper:
     r"""
-    Bases: ``reikna.core.Computation``
-
     The base class of a stepper object used by :py:class:`Integrator`.
     Used to calculated the differential of the state vector given
     time, time step and (optionally) Wiener process differentials:
@@ -49,8 +52,26 @@ class Stepper:
         The modes with higher momentum will be projected out on each step.
     """
 
-    def __init__(self, shape, box, drift,
-            trajectories=1, kinetic_coeff=0.5j, diffusion=None,
-            ksquared_cutoff=None):
+    def __init__(self, shape, box, drift, trajectories=1, diffusion=None):
 
+        if diffusion is not None:
+            assert diffusion.dtype == drift.dtype
+            assert diffusion.components == drift.components
+            noise_dtype = dtypes.real_for(drift.dtype) if diffusion.real_noise else drift.dtype
+            self.noise_type = Type(noise_dtype, (trajectories, diffusion.noise_sources) + shape)
+            self.noise = True
+
+            cell_volume = product(box) / product(shape)
+            self._noise_normalization = 1. / cell_volume
+        else:
+            self.noise_type = None
+            self.noise = False
+
+    def get_stepper(self, thread):
         raise NotImplementedError
+
+    def get_wiener(self, thread, seed=None):
+        if self.noise_type is not None:
+            return Wiener(thread, self.noise_type, self._noise_normalization, seed=seed)
+        else:
+            return None

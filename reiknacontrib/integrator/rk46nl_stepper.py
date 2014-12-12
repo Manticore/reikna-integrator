@@ -7,23 +7,24 @@ from reikna.fft import FFT
 from reikna.algorithms import PureParallel
 
 from .helpers import get_ksquared, get_kprop_trf, get_project_trf
+from .base import Stepper
 
 
-def get_xpropagate(state_arr, drift, diffusion=None, dW_arr=None):
+def get_xpropagate(state_type, drift, diffusion=None, noise_type=None):
 
-    real_dtype = dtypes.real_for(state_arr.dtype)
+    real_dtype = dtypes.real_for(state_type.dtype)
     if diffusion is not None:
-        noise_dtype = dW_arr.dtype
+        noise_dtype = noise_type.dtype
     else:
         noise_dtype = real_dtype
 
     return PureParallel(
         [
-            Parameter('output', Annotation(state_arr, 'o')),
-            Parameter('omega', Annotation(state_arr, 'io')),
-            Parameter('input', Annotation(state_arr, 'i')),
-            Parameter('kinput', Annotation(state_arr, 'i'))]
-            + ([Parameter('dW', Annotation(dW_arr, 'i'))] if diffusion is not None else []) +
+            Parameter('output', Annotation(state_type, 'o')),
+            Parameter('omega', Annotation(state_type, 'io')),
+            Parameter('input', Annotation(state_type, 'i')),
+            Parameter('kinput', Annotation(state_type, 'i'))]
+            + ([Parameter('dW', Annotation(noise_type, 'i'))] if diffusion is not None else []) +
             [Parameter('ai', Annotation(real_dtype)),
             Parameter('bi', Annotation(real_dtype)),
             Parameter('ci', Annotation(real_dtype)),
@@ -90,15 +91,15 @@ def get_xpropagate(state_arr, drift, diffusion=None, dW_arr=None):
         ${output.store_idx}(${trajectory}, ${comp}, ${coords}, new_u);
         %endfor
         """,
-        guiding_array=(state_arr.shape[0],) + state_arr.shape[2:],
+        guiding_array=(state_type.shape[0],) + state_type.shape[2:],
         render_kwds=dict(
             drift=drift,
             diffusion=diffusion,
-            mul_cr=functions.mul(state_arr.dtype, real_dtype),
-            mul_cn=functions.mul(state_arr.dtype, noise_dtype)))
+            mul_cr=functions.mul(state_type.dtype, real_dtype),
+            mul_cn=functions.mul(state_type.dtype, noise_dtype)))
 
 
-class RK46NLStepper(Computation):
+class _RK46NLStepperComp(Computation):
     """
     6-step 4th order RK optimized for minimum dissipation and minimum temporary space.
     """
@@ -106,47 +107,39 @@ class RK46NLStepper(Computation):
     abbreviation = "RK46NL"
 
     def __init__(self, shape, box, drift, trajectories=1, kinetic_coeff=0.5j, diffusion=None,
-            ksquared_cutoff=None):
+            ksquared_cutoff=None, noise_type=None):
 
         real_dtype = dtypes.real_for(drift.dtype)
+        state_type = Type(drift.dtype, (trajectories, drift.components) + shape)
 
-        if diffusion is not None:
-            assert diffusion.dtype == drift.dtype
-            assert diffusion.components == drift.components
-            self._noise = True
-            dW_dtype = real_dtype if diffusion.real_noise else drift.dtype
-            dW_arr = Type(dW_dtype, (trajectories, diffusion.noise_sources) + shape)
-        else:
-            dW_arr = None
-            self._noise = False
-
-        state_arr = Type(drift.dtype, (trajectories, drift.components) + shape)
+        self._noise = diffusion is not None
 
         Computation.__init__(self,
-            [Parameter('output', Annotation(state_arr, 'o')),
-            Parameter('input', Annotation(state_arr, 'i'))]
-            + ([Parameter('dW', Annotation(dW_arr, 'i'))] if self._noise else []) +
+            [Parameter('output', Annotation(state_type, 'o')),
+            Parameter('input', Annotation(state_type, 'i'))]
+            + ([Parameter('dW', Annotation(noise_type, 'i'))] if self._noise else []) +
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype))])
 
         self._ksquared = get_ksquared(shape, box).astype(real_dtype)
-        kprop_trf = get_kprop_trf(state_arr, self._ksquared, -kinetic_coeff)
+        kprop_trf = get_kprop_trf(state_type, self._ksquared, -kinetic_coeff)
 
         self._ksquared_cutoff = ksquared_cutoff
         if self._ksquared_cutoff is not None:
-            project_trf = get_project_trf(state_arr, self._ksquared, ksquared_cutoff)
-            self._fft_with_project = FFT(state_arr, axes=range(2, len(state_arr.shape)))
+            project_trf = get_project_trf(state_type, self._ksquared, ksquared_cutoff)
+            self._fft_with_project = FFT(state_type, axes=range(2, len(state_type.shape)))
             self._fft_with_project.parameter.output.connect(
                 project_trf, project_trf.input,
                 output_prime=project_trf.output, ksquared=project_trf.ksquared)
 
-        self._fft = FFT(state_arr, axes=range(2, len(state_arr.shape)))
-        self._fft_with_kprop = FFT(state_arr, axes=range(2, len(state_arr.shape)))
+        self._fft = FFT(state_type, axes=range(2, len(state_type.shape)))
+        self._fft_with_kprop = FFT(state_type, axes=range(2, len(state_type.shape)))
         self._fft_with_kprop.parameter.output.connect(
             kprop_trf, kprop_trf.input,
             output_prime=kprop_trf.output, ksquared=kprop_trf.ksquared, dt=kprop_trf.dt)
 
-        self._xpropagate = get_xpropagate(state_arr, drift, diffusion=diffusion, dW_arr=dW_arr)
+        self._xpropagate = get_xpropagate(
+            state_type, drift, diffusion=diffusion, noise_type=noise_type)
 
         self._ai = numpy.array([
             0.0, -0.737101392796, -1.634740794341,
@@ -206,3 +199,34 @@ class RK46NLStepper(Computation):
                 self._project(plan, project_out, data_out, data_out, ksquared_device)
 
         return plan
+
+
+class RK46NLStepper(Stepper):
+    """
+    6-step 4th order RK optimized for minimum dissipation and minimum temporary space.
+
+    :param shape: grid shape.
+    :param box: the physical size of the grid.
+    :param drift: a :py:class:`Drift` object providing the function :math:`D`.
+    :param trajectories: the number of stochastic trajectories.
+    :param kinetic_coeff: the value of :math:`K` above (can be real or complex).
+    :param diffusion: a :py:class:`Diffusion` object providing the function :math:`S`.
+    :param ksquared_cutoff: if a positive real value, will be used as a cutoff threshold
+        for :math:`k^2` in the momentum space.
+        The modes with higher momentum will be projected out on each step.
+    """
+
+    abbreviation = "RK46NL"
+
+    def __init__(self, shape, box, drift,
+            trajectories=1, kinetic_coeff=0.5j, diffusion=None, ksquared_cutoff=None):
+
+        Stepper.__init__(self, shape, box, drift, trajectories=trajectories, diffusion=diffusion)
+
+        self._stepper_comp = _RK46NLStepperComp(
+            shape, box, drift,
+            trajectories=trajectories, ksquared_cutoff=ksquared_cutoff,
+            kinetic_coeff=kinetic_coeff, diffusion=diffusion, noise_type=self.noise_type)
+
+    def get_stepper(self, thread):
+        return self._stepper_comp.compile(thread)

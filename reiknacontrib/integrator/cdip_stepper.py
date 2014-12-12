@@ -7,25 +7,26 @@ from reikna.fft import FFT
 from reikna.algorithms import PureParallel
 
 from .helpers import get_ksquared, get_kprop_exp_trf
+from .base import Stepper
 
 
-def get_prop_iter(state_arr, drift, iterations, diffusion=None, dW_arr=None):
+def get_prop_iter(state_type, drift, iterations, diffusion=None, noise_type=None):
 
-    if dtypes.is_complex(state_arr.dtype):
-        real_dtype = dtypes.real_for(state_arr.dtype)
+    if dtypes.is_complex(state_type.dtype):
+        real_dtype = dtypes.real_for(state_type.dtype)
     else:
-        real_dtype = state_arr.dtype
+        real_dtype = state_type.dtype
 
     if diffusion is not None:
-        noise_dtype = dW_arr.dtype
+        noise_dtype = noise_type.dtype
     else:
         noise_dtype = real_dtype
 
     return PureParallel(
         [
-            Parameter('output', Annotation(state_arr, 'o')),
-            Parameter('input', Annotation(state_arr, 'i'))]
-            + ([Parameter('dW', Annotation(dW_arr, 'i'))] if diffusion is not None else []) +
+            Parameter('output', Annotation(state_type, 'o')),
+            Parameter('input', Annotation(state_type, 'i'))]
+            + ([Parameter('dW', Annotation(noise_type, 'i'))] if diffusion is not None else []) +
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype))],
         """
@@ -79,16 +80,16 @@ def get_prop_iter(state_arr, drift, iterations, diffusion=None, dW_arr=None):
         ${output.store_idx}(${trajectory}, ${comp}, ${coords}, psi_${comp}_tmp + dpsi_${comp});
         %endfor
         """,
-        guiding_array=(state_arr.shape[0],) + state_arr.shape[2:],
+        guiding_array=(state_type.shape[0],) + state_type.shape[2:],
         render_kwds=dict(
             drift=drift,
             diffusion=diffusion,
             iterations=iterations,
-            mul_cr=functions.mul(state_arr.dtype, real_dtype),
-            mul_cn=functions.mul(state_arr.dtype, noise_dtype)))
+            mul_cr=functions.mul(state_type.dtype, real_dtype),
+            mul_cn=functions.mul(state_type.dtype, noise_dtype)))
 
 
-class CDIPStepper(Computation):
+class _CDIPStepperComp(Computation):
     """
     Central difference, interaction picture (split-step) stepper.
     """
@@ -96,46 +97,34 @@ class CDIPStepper(Computation):
     abbreviation = "CDIP"
 
     def __init__(self, shape, box, drift,
-            trajectories=1, kinetic_coeff=0.5j, diffusion=None, iterations=3, ksquared_cutoff=None):
-
-        if ksquared_cutoff is not None:
-            raise NotImplementedError
+            trajectories=1, kinetic_coeff=0.5j, diffusion=None, iterations=3, noise_type=None):
 
         real_dtype = dtypes.real_for(drift.dtype)
+        state_type = Type(drift.dtype, (trajectories, drift.components) + shape)
 
-        if diffusion is not None:
-            assert diffusion.dtype == drift.dtype
-            assert diffusion.components == drift.components
-            self._noise = True
-            dW_dtype = real_dtype if diffusion.real_noise else drift.dtype
-            dW_arr = Type(dW_dtype, (trajectories, diffusion.noise_sources) + shape)
-        else:
-            dW_arr = None
-            self._noise = False
-
-        state_arr = Type(drift.dtype, (trajectories, drift.components) + shape)
+        self._noise = diffusion is not None
 
         Computation.__init__(self,
-            [Parameter('output', Annotation(state_arr, 'o')),
-            Parameter('input', Annotation(state_arr, 'i'))]
-            + ([Parameter('dW', Annotation(dW_arr, 'i'))] if self._noise else []) +
+            [Parameter('output', Annotation(state_type, 'o')),
+            Parameter('input', Annotation(state_type, 'i'))]
+            + ([Parameter('dW', Annotation(noise_type, 'i'))] if self._noise else []) +
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype))])
 
         ksquared = get_ksquared(shape, box)
         # '/2' because we want to propagate only to dt/2
         self._kprop = (-ksquared / 2).astype(real_dtype)
-        kprop_trf = get_kprop_exp_trf(state_arr, self._kprop, kinetic_coeff)
+        kprop_trf = get_kprop_exp_trf(state_type, self._kprop, kinetic_coeff)
 
-        self._fft = FFT(state_arr, axes=range(2, len(state_arr.shape)))
-        self._fft_with_kprop = FFT(state_arr, axes=range(2, len(state_arr.shape)))
+        self._fft = FFT(state_type, axes=range(2, len(state_type.shape)))
+        self._fft_with_kprop = FFT(state_type, axes=range(2, len(state_type.shape)))
         self._fft_with_kprop.parameter.output.connect(
             kprop_trf, kprop_trf.input,
             output_prime=kprop_trf.output, kprop=kprop_trf.kprop, dt=kprop_trf.dt)
 
         self._prop_iter = get_prop_iter(
-            state_arr, drift, iterations,
-            diffusion=diffusion, dW_arr=dW_arr)
+            state_type, drift, iterations,
+            diffusion=diffusion, noise_type=noise_type)
 
     def _add_kprop(self, plan, output, input_, kprop_device, dt):
         temp = plan.temp_array_like(output)
@@ -170,42 +159,34 @@ class CDIPStepper(Computation):
         return plan
 
 
-class CDParallelStepper(Computation):
+class _CDParallelStepperComp(Computation):
     """
     Central difference stepper with no interaction between elements in transverse direction.
     """
 
     abbreviation = "CDParallel"
 
-    def __init__(self, shape, drift, trajectories=1, diffusion=None, iterations=3):
+    def __init__(self, shape, drift, trajectories=1, diffusion=None, iterations=3, noise_type=None):
 
         if dtypes.is_complex(drift.dtype):
             real_dtype = dtypes.real_for(drift.dtype)
         else:
             real_dtype = drift.dtype
 
-        if diffusion is not None:
-            assert diffusion.dtype == drift.dtype
-            assert diffusion.components == drift.components
-            self._noise = True
-            dW_dtype = real_dtype if diffusion.real_noise else drift.dtype
-            dW_arr = Type(dW_dtype, (trajectories, diffusion.noise_sources) + shape)
-        else:
-            dW_arr = None
-            self._noise = False
+        state_type = Type(drift.dtype, (trajectories, drift.components) + shape)
 
-        state_arr = Type(drift.dtype, (trajectories, drift.components) + shape)
+        self._noise = diffusion is not None
 
         Computation.__init__(self,
-            [Parameter('output', Annotation(state_arr, 'o')),
-            Parameter('input', Annotation(state_arr, 'i'))]
-            + ([Parameter('dW', Annotation(dW_arr, 'i'))] if self._noise else []) +
+            [Parameter('output', Annotation(state_type, 'o')),
+            Parameter('input', Annotation(state_type, 'i'))]
+            + ([Parameter('dW', Annotation(noise_type, 'i'))] if self._noise else []) +
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype))])
 
         self._prop_iter = get_prop_iter(
-            state_arr, drift, iterations,
-            diffusion=diffusion, dW_arr=dW_arr)
+            state_type, drift, iterations,
+            diffusion=diffusion, noise_type=noise_type)
 
     def _build_plan(self, plan_factory, device_params, *args):
 
@@ -223,3 +204,44 @@ class CDParallelStepper(Computation):
 
         return plan
 
+
+class CDIPStepper(Stepper):
+    """
+    Central difference, interaction picture (split-step) stepper.
+
+    :param shape: grid shape.
+    :param box: the physical size of the grid.
+    :param drift: a :py:class:`Drift` object providing the function :math:`D`.
+    :param trajectories: the number of stochastic trajectories.
+    :param kinetic_coeff: the value of :math:`K` above (can be real or complex).
+    :param diffusion: a :py:class:`Diffusion` object providing the function :math:`S`.
+    :param ksquared_cutoff: if a positive real value, will be used as a cutoff threshold
+        for :math:`k^2` in the momentum space.
+        The modes with higher momentum will be projected out on each step.
+    """
+
+    abbreviation = "CDIP"
+
+    def __init__(self, shape, box, drift,
+            trajectories=1, kinetic_coeff=0.5j, diffusion=None, iterations=3, ksquared_cutoff=None):
+
+        if ksquared_cutoff is not None:
+            raise NotImplementedError
+
+        Stepper.__init__(self, shape, box, drift, trajectories=trajectories, diffusion=diffusion)
+
+        if kinetic_coeff != 0:
+            self._stepper_comp = _CDIPStepperComp(
+                shape, box, drift,
+                trajectories=trajectories,
+                kinetic_coeff=kinetic_coeff, diffusion=diffusion, noise_type=self.noise_type,
+                iterations=iterations)
+        else:
+            self._stepper_comp = _CDParallelStepperComp(
+                shape, box, drift,
+                trajectories=trajectories,
+                diffusion=diffusion, noise_type=self.noise_type,
+                iterations=iterations)
+
+    def get_stepper(self, thread):
+        return self._stepper_comp.compile(thread)

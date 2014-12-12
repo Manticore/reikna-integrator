@@ -265,21 +265,19 @@ def run_test(thr, stepper_cls, integration, cutoff=False, no_losses=False, wigne
     else:
         psi0 = numpy.tile(psi0, (1, 1, 1))
 
-    psi_gpu = thr.to_device(psi0.astype(state_dtype))
+    psi_dev = thr.to_device(psi0.astype(state_dtype))
 
-    # Prepare integrator components
+    # Prepare stepper components
     drift = get_drift(state_dtype, U, gamma, dx, wigner=wigner)
-    stepper = stepper_cls((lattice_size,), (domain[1] - domain[0],), drift,
+    diffusion = get_diffusion(state_dtype, gamma) if wigner else None
+
+    stepper = stepper_cls(
+        (lattice_size,), (domain[1] - domain[0],), drift,
         kinetic_coeff=1j, ksquared_cutoff=ksquared_cutoff,
         trajectories=paths if wigner else 1,
-        diffusion=get_diffusion(state_dtype, gamma) if wigner else None)
+        diffusion=diffusion)
 
-    if wigner:
-        wiener = Wiener(stepper.parameter.dW, 1. / dx, seed=seed)
-    integrator = Integrator(
-        thr, stepper,
-        wiener=wiener if wigner else None,
-        verbose=True, profile=True)
+    integrator = Integrator(thr, stepper, verbose=True, profile=True)
 
     # Integrate
     psi_sampler = PsiSampler()
@@ -293,15 +291,15 @@ def run_test(thr, stepper_cls, integration, cutoff=False, no_losses=False, wigne
 
     if integration == 'fixed':
         result, info = integrator.fixed_step(
-            psi_gpu, 0, interval, steps, samples=samples,
-            samplers=samplers, weak_convergence=['N'], strong_convergence=['psi'])
+            psi_dev, 0, interval, steps, samples=samples,
+            samplers=samplers, weak_convergence=['N'], strong_convergence=['psi'], seed=seed)
     elif integration == 'adaptive':
         result, info = integrator.adaptive_step(
-            psi_gpu, 0, interval / samples, t_end=interval,
+            psi_dev, 0, interval / samples, t_end=interval,
             samplers=samplers, weak_convergence=dict(N=1e-6))
     elif integration == 'adaptive-endless':
         result, info = integrator.adaptive_step(
-            psi_gpu, 0, interval / samples,
+            psi_dev, 0, interval / samples,
             samplers=samplers, weak_convergence=dict(N=1e-6))
 
     N_t, N_mean, N_err = result['N']['time'], result['N']['mean'], result['N']['stderr']
@@ -354,7 +352,7 @@ def run_test(thr, stepper_cls, integration, cutoff=False, no_losses=False, wigne
     sigma = N_err if wigner else N_mean * 1e-6
     max_diff = (numpy.abs(N_mean - N_exact) / sigma).max()
     print("Maximum difference with the exact population decay:", max_diff, "sigma")
-    assert max_diff < 1
+    assert max_diff < 1.5
 
 
 if __name__ == '__main__':

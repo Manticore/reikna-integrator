@@ -28,8 +28,6 @@ class Integrator:
 
     :param thread: a Reikna ``Thread`` object.
     :param stepper: a :py:class:`Stepper` object providing the function :math:`S`.
-    :param wiener: a :py:class:`Wiener` object that will be used to generate
-        Wiener process differentials ``dW``.
     :param verbose: if ``True``, some information about integration progress
         will be printed to stdout.
     :param profile: if ``True``, CPU-GPU synchronization will be performed
@@ -37,23 +35,20 @@ class Integrator:
         of sampler time consumption.
     """
 
-    def __init__(self, thread, stepper, wiener=None, verbose=True, profile=False):
+    def __init__(self, thread, stepper, verbose=True, profile=False):
 
         self.thr = thread
         self.verbose = verbose
         self.profile = profile
 
-        self.stepper = stepper.compile(thread)
-        # TODO: temporary dW array can be avoided if wiener-stepper is called in a computation
-        if wiener is not None:
-            self.noise = True
-            self._w = wiener
-            self.wiener = wiener.compile(thread)
-            self.wiener_double = wiener.double_step().compile(thread)
-            self.dW = self.thr.empty_like(wiener.parameter.dW)
-            self.dW_state = self.thr.empty_like(wiener.parameter.state)
-        else:
-            self.noise = False
+        # We cannot pass the compiled stepper to this constructor,
+        # because we need to call these methods,
+        # and methods do not transfer to ComputationCallables.
+        self.stepper = stepper
+        self.stepper_comp = stepper.get_stepper(thread)
+
+        if stepper.noise:
+            self.noise_arr = self.thr.empty_like(stepper.noise_type)
 
     def _sample(self, data, t, samplers):
 
@@ -67,9 +62,9 @@ class Integrator:
         return sample_dict, stop_integration, t_samplers
 
     def _integrate(self, data_out, data_in, double_step, t_start, dt, steps, samples=None,
-            samplers=None, verbose=False, filters=None):
+            samplers=None, verbose=False, filters=None, wiener=None):
 
-        stepper = self.stepper
+        stepper = self.stepper_comp
 
         # In case of double step we will be calling the Wiener noise generator twice,
         # keeping the time step the same as during the normal step,
@@ -84,13 +79,11 @@ class Integrator:
         t_samplers = 0
         t_integration_start = time.time()
 
-        if self.noise:
-            wiener = self.wiener_double if double_step else self.wiener
-            dW_state = self.dW_state
-            dW = self.dW
-            self.thr.to_device(
-                numpy.zeros(wiener.parameter.state.shape, wiener.parameter.state.dtype),
-                dest=dW_state)
+        noise = wiener is not None
+
+        if noise:
+            wiener_step = wiener.double_step if double_step else wiener.single_step
+            noise_arr = self.noise_arr
 
         if verbose:
             title = 'Double step ' if double_step else 'Normal step '
@@ -104,9 +97,9 @@ class Integrator:
             else:
                 _data_in = data_out
 
-            if self.noise:
-                wiener(dW_state, dW, noise_dt)
-                stepper(data_out, _data_in, dW, t, dt)
+            if noise:
+                wiener_step(noise_arr, noise_dt)
+                stepper(data_out, _data_in, noise_arr, t, dt)
             else:
                 stepper(data_out, _data_in, t, dt)
 
@@ -168,7 +161,8 @@ class Integrator:
 
     def fixed_step(self, data_dev, t_start, t_end, steps,
             samples=1, samplers=None, filters=None,
-            weak_convergence=None, strong_convergence=None):
+            weak_convergence=None, strong_convergence=None,
+            seed=None):
         """
         Runs a fixed time step integration process.
 
@@ -220,25 +214,33 @@ class Integrator:
         assert steps % 2 == 0
         dt = (t_end - t_start) / steps
 
+        wiener = self.stepper.get_wiener(self.thr, seed=seed)
+
         if self.verbose:
             print("Integrating from " + str(t_start) + " to " + str(t_end))
 
         # double step (to estimate the convergence)
         if len(convergence_samplers) > 0:
+            if wiener is not None:
+                wiener.reset()
             data_double_dev = self.thr.copy_array(data_dev)
             results_double, t_double, t_samplers_double = self._integrate(
                 data_double_dev, data_double_dev, True, t_start, dt * 2, steps // 2,
-                samplers=convergence_samplers, samples=1, verbose=self.verbose, filters=filters)
+                samplers=convergence_samplers, samples=1, verbose=self.verbose, filters=filters,
+                wiener=wiener)
         else:
             results_double = {}
             t_double = 0
             t_samplers_double = 0
 
         # actual integration
+        if wiener is not None:
+            wiener.reset()
         sample_start, _, t_samplers_start = self._sample(data_dev, t_start, samplers)
         results, t_normal, t_samplers_normal = self._integrate(
             data_dev, data_dev, False, t_start, dt, steps,
-            samples=samples, samplers=samplers, verbose=self.verbose, filters=filters)
+            samples=samples, samplers=samplers, verbose=self.verbose, filters=filters,
+            wiener=wiener)
         results = [sample_start] + results
 
         if len(convergence_samplers) > 0:
@@ -312,7 +314,7 @@ class Integrator:
         :returns: same as for :py:meth:`fixed_step`.
         """
 
-        if self.noise:
+        if self.stepper.noise:
             # TODO: in order to support it we must somehow implement noise splitting
             # (so that the convergence improves steadily when we decrease the time step).
             # See Wilkie & Cetinbas, 2004 (doi:10.1016/j.physleta.2005.01.064).
