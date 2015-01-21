@@ -238,7 +238,7 @@ class CDIPStepper(Stepper):
                 iterations=iterations)
         else:
             self._stepper_comp = _CDParallelStepperComp(
-                shape, box, drift,
+                shape, drift,
                 trajectories=trajectories,
                 diffusion=diffusion, noise_type=self.noise_type,
                 iterations=iterations)
