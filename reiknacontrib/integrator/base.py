@@ -42,7 +42,9 @@ class Stepper:
     :param box: the physical size of the grid.
     :param drift: a :py:class:`Drift` object providing the function :math:`D`.
     :param trajectories: the number of stochastic trajectories.
-    :param kinetic_coeff: the value of :math:`K` above (can be real or complex).
+    :param kinetic_coeffs: the value of :math:`K` above (can be real or complex).
+        If it is a scalar, the same value will be used for all components,
+        if it is a vector, its elements will be used with the corresponding components.
     :param diffusion: a :py:class:`Diffusion` object providing the function :math:`S`.
     :param ksquared_cutoff: if a positive real value, will be used as a cutoff threshold
         for :math:`k^2` in the momentum space.
@@ -50,7 +52,7 @@ class Stepper:
     """
 
     def __init__(self, shape, box, drift,
-            trajectories=1, kinetic_coeff=0.5j, diffusion=None,
+            trajectories=1, kinetic_coeffs=0.5j, diffusion=None,
             ksquared_cutoff=None):
 
         raise NotImplementedError

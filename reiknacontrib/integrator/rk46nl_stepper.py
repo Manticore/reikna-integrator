@@ -105,10 +105,18 @@ class RK46NLStepper(Computation):
 
     abbreviation = "RK46NL"
 
-    def __init__(self, shape, box, drift, trajectories=1, kinetic_coeff=0.5j, diffusion=None,
+    def __init__(self, shape, box, drift, trajectories=1, kinetic_coeffs=0.5j, diffusion=None,
             ksquared_cutoff=None):
 
         real_dtype = dtypes.real_for(drift.dtype)
+
+        kinetic_coeffs = numpy.asarray(kinetic_coeffs).flatten()
+        if drift.components > 1 and kinetic_coeffs.size == 1:
+            kinetic_coeffs = numpy.tile(kinetic_coeffs, (drift.components,))
+        if drift.components != kinetic_coeffs.size:
+            raise ValueError(
+                "The size of the vector of kinetic coefficients should be either 1 "
+                "or equal to the number of components")
 
         if diffusion is not None:
             assert diffusion.dtype == drift.dtype
@@ -130,7 +138,7 @@ class RK46NLStepper(Computation):
             Parameter('dt', Annotation(real_dtype))])
 
         self._ksquared = get_ksquared(shape, box).astype(real_dtype)
-        kprop_trf = get_kprop_trf(state_arr, self._ksquared, -kinetic_coeff)
+        kprop_trf = get_kprop_trf(state_arr, self._ksquared, -kinetic_coeffs)
 
         self._ksquared_cutoff = ksquared_cutoff
         if self._ksquared_cutoff is not None:

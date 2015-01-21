@@ -255,13 +255,21 @@ class RK4IPStepper(Computation):
 
     abbreviation = "RK4IP"
 
-    def __init__(self, shape, box, drift, trajectories=1, kinetic_coeff=0.5j, diffusion=None,
+    def __init__(self, shape, box, drift, trajectories=1, kinetic_coeffs=0.5j, diffusion=None,
             ksquared_cutoff=None):
 
         if ksquared_cutoff is not None:
             raise NotImplementedError
 
         real_dtype = dtypes.real_for(drift.dtype)
+
+        kinetic_coeffs = numpy.asarray(kinetic_coeffs).flatten()
+        if drift.components > 1 and kinetic_coeffs.size == 1:
+            kinetic_coeffs = numpy.tile(kinetic_coeffs, (drift.components,))
+        if drift.components != kinetic_coeffs.size:
+            raise ValueError(
+                "The size of the vector of kinetic coefficients should be either 1 "
+                "or equal to the number of components")
 
         if diffusion is not None:
             assert diffusion.dtype == drift.dtype
@@ -285,7 +293,7 @@ class RK4IPStepper(Computation):
         ksquared = get_ksquared(shape, box)
         # '/2' because we want to propagate only to dt/2
         self._kprop = (-ksquared / 2).astype(real_dtype)
-        kprop_trf = get_kprop_exp_trf(state_arr, self._kprop, kinetic_coeff)
+        kprop_trf = get_kprop_exp_trf(state_arr, self._kprop, kinetic_coeffs)
 
         self._fft = FFT(state_arr, axes=range(2, len(state_arr.shape)))
         self._fft_with_kprop = FFT(state_arr, axes=range(2, len(state_arr.shape)))
