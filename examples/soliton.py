@@ -351,7 +351,6 @@ def run_test(thr, stepper_cls, integration, cutoff=False, no_losses=False, wigne
             assert diff < 1e-3
 
     # Check the population decay
-    sigma = numpy.linalg.abs(N_err) if wigner else N_mean * 1e-6
     max_diff = (numpy.abs(N_mean - N_exact) / sigma).max()
     print("Maximum difference with the exact population decay:", max_diff, "sigma")
     assert max_diff < 1
