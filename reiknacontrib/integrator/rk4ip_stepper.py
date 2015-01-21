@@ -256,7 +256,7 @@ class _RK4IPStepperComp(Computation):
 
     abbreviation = "RK4IP"
 
-    def __init__(self, shape, box, drift, trajectories=1, kinetic_coeff=0.5j, diffusion=None,
+    def __init__(self, shape, box, drift, trajectories=1, kinetic_coeffs=0.5j, diffusion=None,
             noise_type=None):
 
         real_dtype = dtypes.real_for(drift.dtype)
@@ -274,7 +274,7 @@ class _RK4IPStepperComp(Computation):
         ksquared = get_ksquared(shape, box)
         # '/2' because we want to propagate only to dt/2
         self._kprop = (-ksquared / 2).astype(real_dtype)
-        kprop_trf = get_kprop_exp_trf(state_type, self._kprop, kinetic_coeff)
+        kprop_trf = get_kprop_exp_trf(state_type, self._kprop, kinetic_coeffs)
 
         self._fft = FFT(state_type, axes=range(2, len(state_type.shape)))
         self._fft_with_kprop = FFT(state_type, axes=range(2, len(state_type.shape)))
@@ -351,7 +351,9 @@ class RK4IPStepper(Stepper):
     :param box: the physical size of the grid.
     :param drift: a :py:class:`Drift` object providing the function :math:`D`.
     :param trajectories: the number of stochastic trajectories.
-    :param kinetic_coeff: the value of :math:`K` above (can be real or complex).
+    :param kinetic_coeffs: the value of :math:`K` above (can be real or complex).
+        If it is a scalar, the same value will be used for all components,
+        if it is a vector, its elements will be used with the corresponding components.
     :param diffusion: a :py:class:`Diffusion` object providing the function :math:`S`.
     :param ksquared_cutoff: if a positive real value, will be used as a cutoff threshold
         for :math:`k^2` in the momentum space.
@@ -361,17 +363,25 @@ class RK4IPStepper(Stepper):
     abbreviation = "RK4IP"
 
     def __init__(self, shape, box, drift,
-            trajectories=1, kinetic_coeff=0.5j, diffusion=None, ksquared_cutoff=None):
+            trajectories=1, kinetic_coeffs=0.5j, diffusion=None, ksquared_cutoff=None):
 
         if ksquared_cutoff is not None:
             raise NotImplementedError
 
         Stepper.__init__(self, shape, box, drift, trajectories=trajectories, diffusion=diffusion)
 
+        kinetic_coeffs = numpy.asarray(kinetic_coeffs).flatten()
+        if drift.components > 1 and kinetic_coeffs.size == 1:
+            kinetic_coeffs = numpy.tile(kinetic_coeffs, (drift.components,))
+        if drift.components != kinetic_coeffs.size:
+            raise ValueError(
+                "The size of the vector of kinetic coefficients should be either 1 "
+                "or equal to the number of components")
+
         self._stepper_comp = _RK4IPStepperComp(
             shape, box, drift,
             trajectories=trajectories,
-            kinetic_coeff=kinetic_coeff, diffusion=diffusion, noise_type=self.noise_type)
+            kinetic_coeffs=kinetic_coeffs, diffusion=diffusion, noise_type=self.noise_type)
 
     def get_stepper(self, thread):
         return self._stepper_comp.compile(thread)

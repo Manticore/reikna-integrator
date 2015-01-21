@@ -106,7 +106,7 @@ class _RK46NLStepperComp(Computation):
 
     abbreviation = "RK46NL"
 
-    def __init__(self, shape, box, drift, trajectories=1, kinetic_coeff=0.5j, diffusion=None,
+    def __init__(self, shape, box, drift, trajectories=1, kinetic_coeffs=0.5j, diffusion=None,
             ksquared_cutoff=None, noise_type=None):
 
         real_dtype = dtypes.real_for(drift.dtype)
@@ -122,7 +122,7 @@ class _RK46NLStepperComp(Computation):
             Parameter('dt', Annotation(real_dtype))])
 
         self._ksquared = get_ksquared(shape, box).astype(real_dtype)
-        kprop_trf = get_kprop_trf(state_type, self._ksquared, -kinetic_coeff)
+        kprop_trf = get_kprop_trf(state_type, self._ksquared, -kinetic_coeffs)
 
         self._ksquared_cutoff = ksquared_cutoff
         if self._ksquared_cutoff is not None:
@@ -209,7 +209,9 @@ class RK46NLStepper(Stepper):
     :param box: the physical size of the grid.
     :param drift: a :py:class:`Drift` object providing the function :math:`D`.
     :param trajectories: the number of stochastic trajectories.
-    :param kinetic_coeff: the value of :math:`K` above (can be real or complex).
+    :param kinetic_coeffs: the value of :math:`K` above (can be real or complex).
+        If it is a scalar, the same value will be used for all components,
+        if it is a vector, its elements will be used with the corresponding components.
     :param diffusion: a :py:class:`Diffusion` object providing the function :math:`S`.
     :param ksquared_cutoff: if a positive real value, will be used as a cutoff threshold
         for :math:`k^2` in the momentum space.
@@ -219,14 +221,22 @@ class RK46NLStepper(Stepper):
     abbreviation = "RK46NL"
 
     def __init__(self, shape, box, drift,
-            trajectories=1, kinetic_coeff=0.5j, diffusion=None, ksquared_cutoff=None):
+            trajectories=1, kinetic_coeffs=0.5j, diffusion=None, ksquared_cutoff=None):
 
         Stepper.__init__(self, shape, box, drift, trajectories=trajectories, diffusion=diffusion)
+
+        kinetic_coeffs = numpy.asarray(kinetic_coeffs).flatten()
+        if drift.components > 1 and kinetic_coeffs.size == 1:
+            kinetic_coeffs = numpy.tile(kinetic_coeffs, (drift.components,))
+        if drift.components != kinetic_coeffs.size:
+            raise ValueError(
+                "The size of the vector of kinetic coefficients should be either 1 "
+                "or equal to the number of components")
 
         self._stepper_comp = _RK46NLStepperComp(
             shape, box, drift,
             trajectories=trajectories, ksquared_cutoff=ksquared_cutoff,
-            kinetic_coeff=kinetic_coeff, diffusion=diffusion, noise_type=self.noise_type)
+            kinetic_coeffs=kinetic_coeffs, diffusion=diffusion, noise_type=self.noise_type)
 
     def get_stepper(self, thread):
         return self._stepper_comp.compile(thread)

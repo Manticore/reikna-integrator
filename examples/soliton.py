@@ -273,7 +273,7 @@ def run_test(thr, stepper_cls, integration, cutoff=False, no_losses=False, wigne
 
     stepper = stepper_cls(
         (lattice_size,), (domain[1] - domain[0],), drift,
-        kinetic_coeff=1j, ksquared_cutoff=ksquared_cutoff,
+        kinetic_coeffs=1j, ksquared_cutoff=ksquared_cutoff,
         trajectories=paths if wigner else 1,
         diffusion=diffusion)
 

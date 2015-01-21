@@ -43,8 +43,10 @@ def get_padded_ksquared_cutoff(shape, box, pad=1):
     return min(k_limits) ** 2
 
 
-def get_kprop_trf(state_arr, ksquared_arr, coeff):
-    coeff_dtype = dtypes.detect_type(coeff)
+def get_kprop_trf(state_arr, ksquared_arr, coeffs):
+    coeff_dtype = dtypes.result_type(*[dtypes.detect_type(coeff) for coeff in coeffs])
+    cast = dtypes.cast(coeff_dtype)
+    coeffs = [cast(coeff) for coeff in coeffs]
     return Transformation(
         [
             Parameter('output', Annotation(state_arr, 'o')),
@@ -52,13 +54,61 @@ def get_kprop_trf(state_arr, ksquared_arr, coeff):
             Parameter('ksquared', Annotation(ksquared_arr, 'i')),
             Parameter('dt', Annotation(ksquared_arr.dtype))],
         """
+        %if dtypes.is_complex(coeff_dtype):
+        ${dtypes.ctype(coeff_dtype)} coeffs[${len(coeffs)}];
+        %for i, coeff in enumerate(coeffs):
+        coeffs[${i}] = ${dtypes.c_constant(coeff)};
+        %endfor
+        %else:
+        ${dtypes.ctype(coeff_dtype)} coeffs[${len(coeffs)}] = {
+            %for coeff in coeffs:
+            ${dtypes.c_constant(coeff)},
+            %endfor
+            };
+        %endif
+
         ${ksquared.ctype} ksquared = ${ksquared.load_idx}(${', '.join(idxs[2:])});
-        ${output.store_same}(${mul}(${input.load_same}, ${coeff}, ksquared * ${dt}));
+        ${output.store_same}(${mul}(${input.load_same}, coeffs[${idxs[1]}], ksquared * ${dt}));
         """,
         render_kwds=dict(
-            coeff=dtypes.c_constant(coeff, coeff_dtype),
+            coeffs=coeffs, coeff_dtype=coeff_dtype,
             mul=functions.mul(
                 state_arr.dtype, coeff_dtype, ksquared_arr.dtype, out_dtype=state_arr.dtype)))
+
+
+def get_kprop_exp_trf(state_arr, kprop_arr, coeffs):
+    coeff_dtype = dtypes.result_type(*[dtypes.detect_type(coeff) for coeff in coeffs])
+    cast = dtypes.cast(coeff_dtype)
+    coeffs = [cast(coeff) for coeff in coeffs]
+    return Transformation(
+        [
+            Parameter('output', Annotation(state_arr, 'o')),
+            Parameter('input', Annotation(state_arr, 'i')),
+            Parameter('kprop', Annotation(kprop_arr, 'i')),
+            Parameter('dt', Annotation(kprop_arr.dtype))],
+        """
+        %if dtypes.is_complex(coeff_dtype):
+        ${dtypes.ctype(coeff_dtype)} coeffs[${len(coeffs)}];
+        %for i, coeff in enumerate(coeffs):
+        coeffs[${i}] = ${dtypes.c_constant(coeff)};
+        %endfor
+        %else:
+        ${dtypes.ctype(coeff_dtype)} coeffs[${len(coeffs)}] = {
+            %for coeff in coeffs:
+            ${dtypes.c_constant(coeff)},
+            %endfor
+            };
+        %endif
+
+        ${kprop.ctype} kprop = ${kprop.load_idx}(${', '.join(idxs[2:])});
+        ${output.ctype} kprop_exp = ${exp}(${mul_k}(kprop * ${dt}, coeffs[${idxs[1]}]));
+        ${output.store_same}(${mul}(${input.load_same}, kprop_exp));
+        """,
+        render_kwds=dict(
+            coeffs=coeffs, coeff_dtype=coeff_dtype,
+            mul_k=functions.mul(kprop_arr.dtype, coeff_dtype, out_dtype=state_arr.dtype),
+            exp=functions.exp(state_arr.dtype),
+            mul=functions.mul(state_arr.dtype, state_arr.dtype)))
 
 
 def get_project_trf(state_arr, ksquared_arr, ksquared_cutoff):
@@ -84,23 +134,3 @@ def get_project_trf(state_arr, ksquared_arr, ksquared_cutoff):
         """,
         render_kwds=dict(
             ksquared_cutoff=ksquared_cutoff))
-
-
-def get_kprop_exp_trf(state_arr, kprop_arr, kinetic_coeff):
-    kcoeff_dtype = dtypes.detect_type(kinetic_coeff)
-    return Transformation(
-        [
-            Parameter('output', Annotation(state_arr, 'o')),
-            Parameter('input', Annotation(state_arr, 'i')),
-            Parameter('kprop', Annotation(kprop_arr, 'i')),
-            Parameter('dt', Annotation(kprop_arr.dtype))],
-        """
-        ${kprop.ctype} kprop = ${kprop.load_idx}(${', '.join(idxs[2:])});
-        ${output.ctype} kprop_exp = ${exp}(${mul_k}(kprop * ${dt}, ${kinetic_coeff}));
-        ${output.store_same}(${mul}(${input.load_same}, kprop_exp));
-        """,
-        render_kwds=dict(
-            kinetic_coeff=dtypes.c_constant(kinetic_coeff, kcoeff_dtype),
-            mul_k=functions.mul(kprop_arr.dtype, kcoeff_dtype, out_dtype=state_arr.dtype),
-            exp=functions.exp(state_arr.dtype),
-            mul=functions.mul(state_arr.dtype, state_arr.dtype)))

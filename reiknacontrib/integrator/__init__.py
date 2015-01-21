@@ -1,5 +1,5 @@
 from .integrator import Integrator, StopIntegration, IntegrationError
-from .results import join_results, IntegrationInfo, Timings, Sampler
+from .results import join_results, join_subensemble_results, IntegrationInfo, Timings, Sampler
 from .base import Filter, Stepper
 from .wiener import Wiener
 from .modules import Drift, Diffusion

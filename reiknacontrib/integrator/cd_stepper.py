@@ -1,3 +1,5 @@
+import numpy
+
 from reikna.cluda import dtypes, functions
 from reikna.core import Computation, Parameter, Annotation, Type
 
@@ -84,7 +86,7 @@ def get_prop_iter(state_type, drift, diffusion=None, noise_type=None):
 class _CDStepperComp(Computation):
 
     def __init__(self, shape, box, drift,
-            trajectories=1, kinetic_coeff=0.5j, diffusion=None, noise_type=None,
+            trajectories=1, kinetic_coeffs=0.5j, diffusion=None, noise_type=None,
             iterations=3, ksquared_cutoff=None):
 
         real_dtype = dtypes.real_for(drift.dtype)
@@ -102,7 +104,7 @@ class _CDStepperComp(Computation):
 
         # '/2' because we want to propagate only to dt/2
         self._ksquared = get_ksquared(shape, box).astype(real_dtype)
-        kprop_trf = get_kprop_trf(state_type, self._ksquared, -kinetic_coeff / 2)
+        kprop_trf = get_kprop_trf(state_type, self._ksquared, -kinetic_coeffs / 2)
 
         self._ksquared_cutoff = ksquared_cutoff
         if self._ksquared_cutoff is not None:
@@ -181,7 +183,9 @@ class CDStepper(Stepper):
     :param box: the physical size of the grid.
     :param drift: a :py:class:`Drift` object providing the function :math:`D`.
     :param trajectories: the number of stochastic trajectories.
-    :param kinetic_coeff: the value of :math:`K` above (can be real or complex).
+    :param kinetic_coeffs: the value of :math:`K` above (can be real or complex).
+        If it is a scalar, the same value will be used for all components,
+        if it is a vector, its elements will be used with the corresponding components.
     :param diffusion: a :py:class:`Diffusion` object providing the function :math:`S`.
     :param ksquared_cutoff: if a positive real value, will be used as a cutoff threshold
         for :math:`k^2` in the momentum space.
@@ -191,14 +195,23 @@ class CDStepper(Stepper):
     abbreviation = "CD"
 
     def __init__(self, shape, box, drift,
-            trajectories=1, kinetic_coeff=0.5j, diffusion=None, iterations=3, ksquared_cutoff=None):
+            trajectories=1, kinetic_coeffs=0.5j,
+            diffusion=None, iterations=3, ksquared_cutoff=None):
 
         Stepper.__init__(self, shape, box, drift, trajectories=trajectories, diffusion=diffusion)
+
+        kinetic_coeffs = numpy.asarray(kinetic_coeffs).flatten()
+        if drift.components > 1 and kinetic_coeffs.size == 1:
+            kinetic_coeffs = numpy.tile(kinetic_coeffs, (drift.components,))
+        if drift.components != kinetic_coeffs.size:
+            raise ValueError(
+                "The size of the vector of kinetic coefficients should be either 1 "
+                "or equal to the number of components")
 
         self._stepper_comp = _CDStepperComp(
             shape, box, drift,
             trajectories=trajectories,
-            kinetic_coeff=kinetic_coeff, diffusion=diffusion, noise_type=self.noise_type,
+            kinetic_coeffs=kinetic_coeffs, diffusion=diffusion, noise_type=self.noise_type,
             iterations=iterations, ksquared_cutoff=ksquared_cutoff)
 
     def get_stepper(self, thread):

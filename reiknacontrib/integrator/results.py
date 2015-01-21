@@ -257,3 +257,25 @@ def join_results(results_list):
                 / trajectories.sum())
 
     return full_results
+
+
+def join_subensemble_results(results_list):
+    full_results = {}
+    assert len(results_list) > 1
+    for key in results_list[0]:
+        rs = [results[key] for results in results_list]
+
+        sub_means = numpy.array([r['mean'] for r in rs])
+        mean = sub_means.mean(0)
+        stderr = sub_means.std(0) / numpy.sqrt(mean.size - 1)
+
+        if rs[0]['values'] is not None:
+            values = numpy.concatenate([r['values'] for r in rs], axis=0)
+        else:
+            values = None
+
+        full_results[key] = dict(
+            time=rs[0]['time'], trajectories=sum(r['trajectories'] for r in rs),
+            values=values, mean=mean, stderr=stderr)
+
+    return full_results
