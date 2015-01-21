@@ -1,3 +1,5 @@
+import numpy
+
 from reikna.cluda import dtypes, functions
 from reikna.core import Computation, Parameter, Annotation, Type
 
