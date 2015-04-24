@@ -6,7 +6,7 @@ from reikna.core import Computation, Parameter, Annotation, Type
 from reikna.fft import FFT
 from reikna.algorithms import PureParallel
 
-from .helpers import get_ksquared, get_kprop_trf, get_project_trf
+from .helpers import get_ksquared, get_kprop_trf, get_project_trf, normalize_kinetic_coeffs
 from .base import Stepper
 
 
@@ -102,9 +102,9 @@ class _CDStepperComp(Computation):
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype))])
 
-        # '/2' because we want to propagate only to dt/2
         self._ksquared = get_ksquared(shape, box).astype(real_dtype)
-        kprop_trf = get_kprop_trf(state_type, self._ksquared, -kinetic_coeffs / 2)
+        # '/2' because we want to propagate only to dt/2
+        kprop_trf = get_kprop_trf(state_type, self._ksquared, kinetic_coeffs / 2)
 
         self._ksquared_cutoff = ksquared_cutoff
         if self._ksquared_cutoff is not None:
@@ -184,8 +184,12 @@ class CDStepper(Stepper):
     :param drift: a :py:class:`Drift` object providing the function :math:`D`.
     :param trajectories: the number of stochastic trajectories.
     :param kinetic_coeffs: the value of :math:`K` above (can be real or complex).
-        If it is a scalar, the same value will be used for all components,
-        if it is a vector, its elements will be used with the corresponding components.
+        If it is a scalar, the same value will be used for all components
+        and the second power of Laplacian;
+        if it is a 1D vector, its elements will be used with the corresponding components
+        and the second power of Laplacian;
+        if a dictionary ``{power: values}``, ``values`` will be used for corresponding
+        powers of the Laplacian (only even powers are supported).
     :param diffusion: a :py:class:`Diffusion` object providing the function :math:`S`.
     :param ksquared_cutoff: if a positive real value, will be used as a cutoff threshold
         for :math:`k^2` in the momentum space.
@@ -200,13 +204,7 @@ class CDStepper(Stepper):
 
         Stepper.__init__(self, shape, box, drift, trajectories=trajectories, diffusion=diffusion)
 
-        kinetic_coeffs = numpy.asarray(kinetic_coeffs).flatten()
-        if drift.components > 1 and kinetic_coeffs.size == 1:
-            kinetic_coeffs = numpy.tile(kinetic_coeffs, (drift.components,))
-        if drift.components != kinetic_coeffs.size:
-            raise ValueError(
-                "The size of the vector of kinetic coefficients should be either 1 "
-                "or equal to the number of components")
+        kinetic_coeffs = normalize_kinetic_coeffs(kinetic_coeffs, drift.components)
 
         self._stepper_comp = _CDStepperComp(
             shape, box, drift,

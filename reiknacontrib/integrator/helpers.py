@@ -43,10 +43,64 @@ def get_padded_ksquared_cutoff(shape, box, pad=1):
     return min(k_limits) ** 2
 
 
-def get_kprop_trf(state_arr, ksquared_arr, coeffs):
-    coeff_dtype = dtypes.result_type(*[dtypes.detect_type(coeff) for coeff in coeffs])
-    cast = dtypes.cast(coeff_dtype)
-    coeffs = [cast(coeff) for coeff in coeffs]
+class KineticCoeffs:
+
+    def __init__(self, values, dtype):
+        self.values = values
+        self.dtype = dtype
+
+    # backward compatibility with the old division
+    def __div__(self, other):
+        return self.__truediv__(other)
+
+    def __truediv__(self, other):
+        return KineticCoeffs({pwr: value / other for pwr, value in self.values.items()}, self.dtype)
+
+
+def normalize_kinetic_coeffs(kinetic_coeffs, drift_components):
+
+    if kinetic_coeffs is None:
+        values = {}
+        dtype = None
+
+    elif isinstance(kinetic_coeffs, dict):
+
+        # get the dtype that will suite all the coefficients
+        coeffs = [
+            [coeff for pwr, coeff in component_coeffs.items()]
+            for component_coeffs in kinetic_coeffs]
+        dtype = numpy.asarray(coeffs).dtype
+
+        values = {
+            pwr:numpy.asarray(coeffs).reshape(drift_components).astype(dtype)
+            for pwr, coeffs in kinetic_coeffs.items()}
+    else:
+        arr = numpy.asarray(kinetic_coeffs)
+        dtype = arr.dtype
+
+        if arr.ndim == 0:
+        # 0: same coefficient for all components, applied to \nabla^2
+            values = {2: numpy.tile(arr, drift_components)}
+        elif arr.ndim == 1:
+        # 1: separate coefficient for each component, applied to \nabla^2
+            values = {2: arr}
+        elif kinetic_coeffs_arr.ndim == 2:
+        # separate coefficient for each component and for each power of \nabla
+            values = {
+                pwr: arr[:,pwr]
+                for pwr in range(arr.shape[1])
+                if (arr[:,pwr] != 0).any()}
+        else:
+            raise ValueError("Unsupported number of dimensions of the kinetic coefficients array")
+
+    if any(pwr % 2 == 1 for pwr in values):
+        raise NotImplementedError("Odd powers of \\nabla are not supported")
+
+    return KineticCoeffs(values, dtype)
+
+
+def get_kprop_trf(state_arr, ksquared_arr, coeffs, exp=False):
+    compound_dtype = dtypes.result_type(coeffs.dtype, ksquared_arr.dtype)
     return Transformation(
         [
             Parameter('output', Annotation(state_arr, 'o')),
@@ -54,61 +108,54 @@ def get_kprop_trf(state_arr, ksquared_arr, coeffs):
             Parameter('ksquared', Annotation(ksquared_arr, 'i')),
             Parameter('dt', Annotation(ksquared_arr.dtype))],
         """
-        %if dtypes.is_complex(coeff_dtype):
-        ${dtypes.ctype(coeff_dtype)} coeffs[${len(coeffs)}];
-        %for i, coeff in enumerate(coeffs):
-        coeffs[${i}] = ${dtypes.c_constant(coeff)};
-        %endfor
-        %else:
-        ${dtypes.ctype(coeff_dtype)} coeffs[${len(coeffs)}] = {
-            %for coeff in coeffs:
-            ${dtypes.c_constant(coeff)},
-            %endfor
-            };
-        %endif
-
+        %if max(coeffs.values) > 0:
         ${ksquared.ctype} ksquared = ${ksquared.load_idx}(${', '.join(idxs[2:])});
-        ${output.store_same}(${mul}(${input.load_same}, coeffs[${idxs[1]}], ksquared * ${dt}));
-        """,
-        render_kwds=dict(
-            coeffs=coeffs, coeff_dtype=coeff_dtype,
-            mul=functions.mul(
-                state_arr.dtype, coeff_dtype, ksquared_arr.dtype, out_dtype=state_arr.dtype)))
-
-
-def get_kprop_exp_trf(state_arr, kprop_arr, coeffs):
-    coeff_dtype = dtypes.result_type(*[dtypes.detect_type(coeff) for coeff in coeffs])
-    cast = dtypes.cast(coeff_dtype)
-    coeffs = [cast(coeff) for coeff in coeffs]
-    return Transformation(
-        [
-            Parameter('output', Annotation(state_arr, 'o')),
-            Parameter('input', Annotation(state_arr, 'i')),
-            Parameter('kprop', Annotation(kprop_arr, 'i')),
-            Parameter('dt', Annotation(kprop_arr.dtype))],
-        """
-        %if dtypes.is_complex(coeff_dtype):
-        ${dtypes.ctype(coeff_dtype)} coeffs[${len(coeffs)}];
-        %for i, coeff in enumerate(coeffs):
-        coeffs[${i}] = ${dtypes.c_constant(coeff)};
-        %endfor
-        %else:
-        ${dtypes.ctype(coeff_dtype)} coeffs[${len(coeffs)}] = {
-            %for coeff in coeffs:
-            ${dtypes.c_constant(coeff)},
-            %endfor
-            };
         %endif
 
-        ${kprop.ctype} kprop = ${kprop.load_idx}(${', '.join(idxs[2:])});
-        ${output.ctype} kprop_exp = ${exp}(${mul_k}(kprop * ${dt}, coeffs[${idxs[1]}]));
-        ${output.store_same}(${mul}(${input.load_same}, kprop_exp));
+        ${dtypes.ctype(compound_dtype)} compound_coeff = ${dtypes.c_constant(0, compound_dtype)};
+
+        %for pwr, values in coeffs.values.items():
+        {
+            ${dtypes.ctype(coeffs.dtype)} value;
+
+            %for comp in range(output.shape[1]):
+            ${'if' if comp == 0 else 'elseif'} (${idxs[1]} == ${comp})
+            {
+                value = ${dtypes.c_constant(values[comp], coeffs.dtype)};
+            }
+            %endfor
+
+            compound_coeff =
+                compound_coeff
+                + ${mul_kc}(
+                    %if pwr == 0:
+                    ${dt}
+                    %elif pwr == 2:
+                    -ksquared * ${dt}
+                    %else:
+                    pow(-ksquared, ${pwr // 2}) * ${dt}
+                    %endif
+                    ,
+                    value
+                    );
+        }
+        %endfor
+
+        ${output.store_same}(${mul_ic}(
+            ${input.load_same},
+            %if exp is not None:
+            ${exp}(compound_coeff)
+            %else:
+            compound_coeff
+            %endif
+            ));
         """,
         render_kwds=dict(
-            coeffs=coeffs, coeff_dtype=coeff_dtype,
-            mul_k=functions.mul(kprop_arr.dtype, coeff_dtype, out_dtype=state_arr.dtype),
-            exp=functions.exp(state_arr.dtype),
-            mul=functions.mul(state_arr.dtype, state_arr.dtype)))
+            coeffs=coeffs,
+            compound_dtype=compound_dtype,
+            mul_ic=functions.mul(state_arr.dtype, compound_dtype, out_dtype=state_arr.dtype),
+            mul_kc=functions.mul(ksquared_arr.dtype, coeffs.dtype, out_dtype=compound_dtype),
+            exp=functions.exp(compound_dtype) if exp else None))
 
 
 def get_project_trf(state_arr, ksquared_arr, ksquared_cutoff):

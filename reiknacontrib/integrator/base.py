@@ -32,7 +32,7 @@ class Stepper:
 
     .. math::
 
-        S(x, y, t, dt, dW) = K \nabla^2 y + D(x, y, t) dt + S(x, y, t) dW,
+        S(x, y, t, dt, dW) = \sum_{n=0,2,...} K_n \nabla^n y + D(x, y, t) dt + S(x, y, t) dW,
 
     where :math:`D` is the deterministic (drift) term,
     and :math:`S` is the stochastic (diffusion) term.

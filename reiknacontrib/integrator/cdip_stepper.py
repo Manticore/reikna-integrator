@@ -6,7 +6,7 @@ from reikna.core import Computation, Parameter, Annotation, Type
 from reikna.fft import FFT
 from reikna.algorithms import PureParallel
 
-from .helpers import get_ksquared, get_kprop_exp_trf
+from .helpers import get_ksquared, get_kprop_trf, normalize_kinetic_coeffs
 from .base import Stepper
 
 
@@ -111,24 +111,23 @@ class _CDIPStepperComp(Computation):
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype))])
 
-        ksquared = get_ksquared(shape, box)
+        self._ksquared = get_ksquared(shape, box).astype(real_dtype)
         # '/2' because we want to propagate only to dt/2
-        self._kprop = (-ksquared / 2).astype(real_dtype)
-        kprop_trf = get_kprop_exp_trf(state_type, self._kprop, kinetic_coeffs)
+        kprop_trf = get_kprop_trf(state_type, self._ksquared, kinetic_coeffs / 2, exp=True)
 
         self._fft = FFT(state_type, axes=range(2, len(state_type.shape)))
         self._fft_with_kprop = FFT(state_type, axes=range(2, len(state_type.shape)))
         self._fft_with_kprop.parameter.output.connect(
             kprop_trf, kprop_trf.input,
-            output_prime=kprop_trf.output, kprop=kprop_trf.kprop, dt=kprop_trf.dt)
+            output_prime=kprop_trf.output, ksquared=kprop_trf.ksquared, dt=kprop_trf.dt)
 
         self._prop_iter = get_prop_iter(
             state_type, drift, iterations,
             diffusion=diffusion, noise_type=noise_type)
 
-    def _add_kprop(self, plan, output, input_, kprop_device, dt):
+    def _add_kprop(self, plan, output, input_, ksquared_device, dt):
         temp = plan.temp_array_like(output)
-        plan.computation_call(self._fft_with_kprop, temp, kprop_device, dt, input_)
+        plan.computation_call(self._fft_with_kprop, temp, ksquared_device, dt, input_)
         plan.computation_call(self._fft, output, temp, inverse=True)
 
     def _build_plan(self, plan_factory, device_params, *args):
@@ -140,11 +139,11 @@ class _CDIPStepperComp(Computation):
 
         plan = plan_factory()
 
-        kprop_device = plan.persistent_array(self._kprop)
+        ksquared_device = plan.persistent_array(self._ksquared)
 
         # psi_I = prop_L_half_dt(input_)
         psi_I = plan.temp_array_like(input_)
-        self._add_kprop(plan, psi_I, input_, kprop_device, dt)
+        self._add_kprop(plan, psi_I, input_, ksquared_device, dt)
 
         # psi_N = prop_iter(psi_I)
         psi_N = plan.temp_array_like(input_)
@@ -154,7 +153,7 @@ class _CDIPStepperComp(Computation):
             plan.computation_call(self._prop_iter, psi_N, psi_I, t, dt)
 
         # output = prop_L_half_dt(psi_N)
-        self._add_kprop(plan, output, psi_N, kprop_device, dt)
+        self._add_kprop(plan, output, psi_N, ksquared_device, dt)
 
         return plan
 
@@ -214,8 +213,12 @@ class CDIPStepper(Stepper):
     :param drift: a :py:class:`Drift` object providing the function :math:`D`.
     :param trajectories: the number of stochastic trajectories.
     :param kinetic_coeffs: the value of :math:`K` above (can be real or complex).
-        If it is a scalar, the same value will be used for all components,
-        if it is a vector, its elements will be used with the corresponding components.
+        If it is a scalar, the same value will be used for all components
+        and the second power of Laplacian;
+        if it is a 1D vector, its elements will be used with the corresponding components
+        and the second power of Laplacian;
+        if a dictionary ``{power: values}``, ``values`` will be used for corresponding
+        powers of the Laplacian (only even powers are supported).
     :param diffusion: a :py:class:`Diffusion` object providing the function :math:`S`.
     :param ksquared_cutoff: if a positive real value, will be used as a cutoff threshold
         for :math:`k^2` in the momentum space.
@@ -233,15 +236,9 @@ class CDIPStepper(Stepper):
 
         Stepper.__init__(self, shape, box, drift, trajectories=trajectories, diffusion=diffusion)
 
-        kinetic_coeffs = numpy.asarray(kinetic_coeffs).flatten()
-        if drift.components > 1 and kinetic_coeffs.size == 1:
-            kinetic_coeffs = numpy.tile(kinetic_coeffs, (drift.components,))
-        if drift.components != kinetic_coeffs.size:
-            raise ValueError(
-                "The size of the vector of kinetic coefficients should be either 1 "
-                "or equal to the number of components")
+        kinetic_coeffs = normalize_kinetic_coeffs(kinetic_coeffs, drift.components)
 
-        if (kinetic_coeffs != 0).any():
+        if len(kinetic_coeffs.values) > 0:
             self._stepper_comp = _CDIPStepperComp(
                 shape, box, drift,
                 trajectories=trajectories,
