@@ -66,9 +66,7 @@ def normalize_kinetic_coeffs(kinetic_coeffs, drift_components):
     elif isinstance(kinetic_coeffs, dict):
 
         # get the dtype that will suite all the coefficients
-        coeffs = [
-            [coeff for pwr, coeff in component_coeffs.items()]
-            for component_coeffs in kinetic_coeffs]
+        coeffs = [value for pwr, value in kinetic_coeffs.items()]
         dtype = numpy.asarray(coeffs).dtype
 
         values = {
