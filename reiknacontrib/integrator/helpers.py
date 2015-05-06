@@ -117,7 +117,7 @@ def get_kprop_trf(state_arr, ksquared_arr, coeffs, exp=False):
             ${dtypes.ctype(coeffs.dtype)} value;
 
             %for comp in range(output.shape[1]):
-            ${'if' if comp == 0 else 'elseif'} (${idxs[1]} == ${comp})
+            ${'if' if comp == 0 else 'else if'} (${idxs[1]} == ${comp})
             {
                 value = ${dtypes.c_constant(values[comp], coeffs.dtype)};
             }
