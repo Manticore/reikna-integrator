@@ -56,7 +56,12 @@ class Stepper:
         if diffusion is not None:
             assert diffusion.dtype == drift.dtype
             assert diffusion.components == drift.components
-            noise_dtype = dtypes.real_for(drift.dtype) if diffusion.real_noise else drift.dtype
+
+            if not diffusion.real_noise or dtypes.is_real(drift.dtype):
+                noise_dtype = drift.dtype
+            else:
+                noise_dtype = dtypes.real_for(drift.dtype)
+
             self.noise_type = Type(noise_dtype, (trajectories, diffusion.noise_sources) + shape)
             self.noise = True
 
