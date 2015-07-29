@@ -49,6 +49,9 @@ class KineticCoeffs:
         self.values = values
         self.dtype = dtype
 
+    def nonzero(self):
+        return any((coeffs != 0).any() for pwr, coeffs in self.values.items())
+
     # backward compatibility with the old division
     def __div__(self, other):
         return self.__truediv__(other)

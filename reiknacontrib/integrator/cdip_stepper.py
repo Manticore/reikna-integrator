@@ -238,7 +238,7 @@ class CDIPStepper(Stepper):
 
         kinetic_coeffs = normalize_kinetic_coeffs(kinetic_coeffs, drift.components)
 
-        if len(kinetic_coeffs.values) > 0:
+        if kinetic_coeffs.nonzero():
             self._stepper_comp = _CDIPStepperComp(
                 shape, box, drift,
                 trajectories=trajectories,
