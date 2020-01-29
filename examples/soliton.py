@@ -382,7 +382,7 @@ if __name__ == '__main__':
     for stepper_cls, integration, cutoff in itertools.product(steppers, integrations, cutoffs):
 
         # FIXME: Currently not all steppers support cutoffs.
-        if cutoff and stepper_cls not in (CDStepper, RK46NLStepper):
+        if cutoff and stepper_cls == RK46NLStepper:
             continue
 
         run_test(thr, stepper_cls, integration, cutoff=cutoff, no_losses=True, wigner=False)

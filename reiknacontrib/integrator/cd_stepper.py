@@ -10,7 +10,7 @@ from .helpers import get_ksquared, get_kprop_trf, get_project_trf, normalize_kin
 from .base import Stepper
 
 
-def get_prop_iter(state_type, drift, diffusion=None, noise_type=None):
+def get_prop_iter(state_type, drift, diffusion=None, noise_type=None, no_kinput=False):
 
     real_dtype = dtypes.real_for(state_type.dtype)
     if diffusion is not None:
@@ -22,9 +22,9 @@ def get_prop_iter(state_type, drift, diffusion=None, noise_type=None):
         [
             Parameter('output', Annotation(state_type, 'o')),
             Parameter('orig_input', Annotation(state_type, 'i')),
-            Parameter('input', Annotation(state_type, 'i')),
-            Parameter('kinput', Annotation(state_type, 'i'))]
-            + ([Parameter('dW', Annotation(noise_type, 'i'))] if diffusion is not None else []) +
+            Parameter('input', Annotation(state_type, 'i'))] +
+            ([Parameter('kinput', Annotation(state_type, 'i'))] if not no_kinput else []) +
+            ([Parameter('dW', Annotation(noise_type, 'i'))] if diffusion is not None else []) +
             [Parameter('t', Annotation(real_dtype)),
             Parameter('dt', Annotation(real_dtype)),
             Parameter('dt_modifier', Annotation(real_dtype))],
@@ -39,13 +39,17 @@ def get_prop_iter(state_type, drift, diffusion=None, noise_type=None):
 
             if diffusion is None:
                 dW = None
+            if no_kinput:
+                kinput = None
         %>
 
         %for comp in range(components):
         ${output.ctype} psi_orig_${comp} = ${orig_input.load_idx}(
             ${trajectory}, ${comp}, ${coords});
         ${output.ctype} psi_${comp} = ${input.load_idx}(${trajectory}, ${comp}, ${coords});
+        %if not no_kinput:
         ${output.ctype} kpsi_${comp} = ${kinput.load_idx}(${trajectory}, ${comp}, ${coords});
+        %endif
         ${output.ctype} dpsi_${comp};
         %endfor
 
@@ -57,8 +61,10 @@ def get_prop_iter(state_type, drift, diffusion=None, noise_type=None):
 
         %for comp in range(components):
         dpsi_${comp} =
-            kpsi_${comp}
-            + ${mul_cr}(
+            %if not no_kinput:
+            kpsi_${comp} +
+            %endif
+            ${mul_cr}(
                 + ${mul_cr}(${drift.module}${comp}(
                     ${coords}, ${psi_args}, ${t} + ${dt} / 2), ${dt})
                 %if diffusion is not None:
@@ -80,7 +86,8 @@ def get_prop_iter(state_type, drift, diffusion=None, noise_type=None):
             drift=drift,
             diffusion=diffusion,
             mul_cr=functions.mul(state_type.dtype, real_dtype),
-            mul_cn=functions.mul(state_type.dtype, noise_dtype)))
+            mul_cn=functions.mul(state_type.dtype, noise_dtype),
+            no_kinput=no_kinput))
 
 
 class _CDStepperComp(Computation):

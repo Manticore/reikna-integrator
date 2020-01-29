@@ -6,8 +6,9 @@ from reikna.core import Computation, Parameter, Annotation, Type
 from reikna.fft import FFT
 from reikna.algorithms import PureParallel
 
-from .helpers import get_ksquared, get_kprop_trf, normalize_kinetic_coeffs
+from .helpers import get_ksquared, get_kprop_trf, normalize_kinetic_coeffs, get_project_trf
 from .base import Stepper
+from .cd_stepper import get_prop_iter as get_prop_iter_single
 
 
 def get_prop_iter(state_type, drift, iterations, diffusion=None, noise_type=None):
@@ -97,12 +98,14 @@ class _CDIPStepperComp(Computation):
     abbreviation = "CDIP"
 
     def __init__(self, shape, box, drift,
-            trajectories=1, kinetic_coeffs=0.5j, diffusion=None, iterations=3, noise_type=None):
+            trajectories=1, kinetic_coeffs=0.5j, diffusion=None, iterations=3, noise_type=None,
+            ksquared_cutoff=None):
 
         real_dtype = dtypes.real_for(drift.dtype)
         state_type = Type(drift.dtype, (trajectories, drift.components) + shape)
 
         self._noise = diffusion is not None
+        self._iterations = iterations
 
         Computation.__init__(self,
             [Parameter('output', Annotation(state_type, 'o')),
@@ -114,6 +117,17 @@ class _CDIPStepperComp(Computation):
         self._ksquared = get_ksquared(shape, box).astype(real_dtype)
         # '/2' because we want to propagate only to dt/2
         kprop_trf = get_kprop_trf(state_type, self._ksquared, kinetic_coeffs / 2, exp=True)
+
+        self._ksquared_cutoff = ksquared_cutoff
+        if self._ksquared_cutoff is not None:
+            project_trf = get_project_trf(state_type, self._ksquared, ksquared_cutoff)
+            self._fft_with_project = FFT(state_type, axes=range(2, len(state_type.shape)))
+            self._fft_with_project.parameter.output.connect(
+                project_trf, project_trf.input,
+                output_prime=project_trf.output, ksquared=project_trf.ksquared)
+
+            self._prop_iter_single = get_prop_iter_single(
+                state_type, drift, diffusion=diffusion, noise_type=noise_type, no_kinput=True)
 
         self._fft = FFT(state_type, axes=range(2, len(state_type.shape)))
         self._fft_with_kprop = FFT(state_type, axes=range(2, len(state_type.shape)))
@@ -128,6 +142,10 @@ class _CDIPStepperComp(Computation):
     def _add_kprop(self, plan, output, input_, ksquared_device, dt):
         temp = plan.temp_array_like(output)
         plan.computation_call(self._fft_with_kprop, temp, ksquared_device, dt, input_)
+        plan.computation_call(self._fft, output, temp, inverse=True)
+
+    def _project(self, plan, output, temp, input_, ksquared_device):
+        plan.computation_call(self._fft_with_project, temp, ksquared_device, input_)
         plan.computation_call(self._fft, output, temp, inverse=True)
 
     def _build_plan(self, plan_factory, device_params, *args):
@@ -147,10 +165,33 @@ class _CDIPStepperComp(Computation):
 
         # psi_N = prop_iter(psi_I)
         psi_N = plan.temp_array_like(input_)
-        if self._noise:
-            plan.computation_call(self._prop_iter, psi_N, psi_I, dW, t, dt)
+
+        if self._ksquared_cutoff is None:
+            if self._noise:
+                plan.computation_call(self._prop_iter, psi_N, psi_I, dW, t, dt)
+            else:
+                plan.computation_call(self._prop_iter, psi_N, psi_I, t, dt)
         else:
-            plan.computation_call(self._prop_iter, psi_N, psi_I, t, dt)
+            data_out = psi_I
+
+            for i in range(self._iterations):
+
+                data_in = data_out
+                data_out = psi_N
+
+                if i == self._iterations - 1:
+                    dt_modifier = 2.
+                else:
+                    dt_modifier = 1.
+
+                if self._noise:
+                    plan.computation_call(
+                        self._prop_iter_single, data_out, psi_I, data_in, dW, t, dt, dt_modifier)
+                else:
+                    plan.computation_call(
+                        self._prop_iter_single, data_out, psi_I, data_in, t, dt, dt_modifier)
+
+                self._project(plan, data_out, data_out, data_out, ksquared_device)
 
         # output = prop_L_half_dt(psi_N)
         self._add_kprop(plan, output, psi_N, ksquared_device, dt)
@@ -231,9 +272,6 @@ class CDIPStepper(Stepper):
             trajectories=1, kinetic_coeffs=0.5j,
             diffusion=None, iterations=3, ksquared_cutoff=None):
 
-        if ksquared_cutoff is not None:
-            raise NotImplementedError
-
         Stepper.__init__(self, shape, box, drift, trajectories=trajectories, diffusion=diffusion)
 
         kinetic_coeffs = normalize_kinetic_coeffs(kinetic_coeffs, drift.components)
@@ -243,13 +281,13 @@ class CDIPStepper(Stepper):
                 shape, box, drift,
                 trajectories=trajectories,
                 kinetic_coeffs=kinetic_coeffs, diffusion=diffusion, noise_type=self.noise_type,
-                iterations=iterations)
+                iterations=iterations, ksquared_cutoff=ksquared_cutoff)
         else:
             self._stepper_comp = _CDParallelStepperComp(
                 shape, drift,
                 trajectories=trajectories,
                 diffusion=diffusion, noise_type=self.noise_type,
-                iterations=iterations)
+                iterations=iterations, ksquared_cutoff=ksquared_cutoff)
 
     def get_stepper(self, thread):
         return self._stepper_comp.compile(thread)
